@@ -1,13 +1,16 @@
-# viewer_time_history.py
+# resistanceplotingV5.py — wafer resistance viewer + Keithley 2450 live measurement
 import argparse
-import sys
 import json
 import math
+import os
 import pathlib
+import re
+import socket
+import sys
 import threading
 import time
-import re
-from typing import List, Dict, Tuple, Optional
+import uuid
+import webbrowser
 from datetime import datetime
 from dataclasses import dataclass
 
@@ -21,12 +24,41 @@ import pyvisa
 import numpy as np
 from shapely.geometry import Point, Polygon
 
+from datafab_io import atomic_write_json, resource_path
+
+DEFAULT_RESOURCE = "USB0::0x05E6::0x2450::04644450::INSTR"
+
+# =========================
+# Command line
+# =========================
+parser = argparse.ArgumentParser(description="Wafer resistance viewer with Keithley 2450 live measurement.")
+parser.add_argument("json_file", nargs="?", help="Generated *_database.json (a file dialog opens if omitted)")
+parser.add_argument("--resource", default=DEFAULT_RESOURCE, help="VISA resource of the Keithley 2450")
+parser.add_argument("--simulate", action="store_true", help="Simulate the instrument (no hardware needed)")
+parser.add_argument("--port", type=int, default=8050, help="Local web port (default 8050)")
+parser.add_argument("--no-browser", action="store_true", help="Do not open the browser automatically")
+args, _unknown = parser.parse_known_args()
+
+
+def tk_message(kind: str, title: str, text: str):
+    """Show a Tk message box on top of other windows (used before the web UI exists)."""
+    import tkinter as tk
+    from tkinter import messagebox
+    root = tk.Tk()
+    root.withdraw()
+    root.call('wm', 'attributes', '.', '-topmost', True)
+    try:
+        return getattr(messagebox, kind)(title, text)
+    finally:
+        root.destroy()
+
+
 # =========================
 # Instrument wrapper (Keithley 2450)
 # =========================
 @dataclass
 class SMUConfig:
-    resource: str = "USB0::0x05E6::0x2450::04644450::INSTR"
+    resource: str = DEFAULT_RESOURCE
     simulate: bool = False  # True to test without hardware
 
 
@@ -128,6 +160,41 @@ class Keithley2450:
             except Exception:
                 self._last_nplc = float(nplc)
 
+    def reconfigure(self, resource: str, simulate: bool):
+        """Switch to another instrument address / simulation mode (closes the current session)."""
+        with self.lock:
+            if resource == self.cfg.resource and simulate == self.cfg.simulate:
+                return
+            self._close_locked()
+            self.cfg = SMUConfig(resource=resource, simulate=simulate)
+
+    def close(self):
+        with self.lock:
+            self._close_locked()
+
+    def _close_locked(self):
+        if self.inst is not None:
+            try:
+                self.inst.write(":OUTP OFF")
+                self.inst.write(":SOUR:CURR 0")
+            except Exception:
+                pass
+            try:
+                self.inst.close()
+            except Exception:
+                pass
+        if self.rm is not None:
+            try:
+                self.rm.close()
+            except Exception:
+                pass
+        self.inst = None
+        self.rm = None
+        self._connected = False
+        self._configured = False
+        self._last_nplc = None
+        self.idn = ""
+
     def output_off(self):
         if self.cfg.simulate:
             return
@@ -181,10 +248,7 @@ class Keithley2450:
             return abs((Vp - Vm) / (2 * I_amps))
 
 
-smu = Keithley2450(SMUConfig(
-    resource="USB0::0x05E6::0x2450::04644450::INSTR",
-    simulate=False,
-))
+smu = Keithley2450(SMUConfig(resource=args.resource, simulate=args.simulate))
 
 
 # =========================
@@ -244,7 +308,6 @@ def read_data_copy():
 def worker_loop():
     global idn_text
     t0 = None
-    initialized = False
 
     while not stop_event.is_set():
         if not run_event.is_set() and not single_event.is_set():
@@ -260,13 +323,11 @@ def worker_loop():
         I = iex_ua * 1e-6
 
         try:
-            smu.connect()
+            with smu.lock:
+                smu.connect()
             idn_text = smu.idn
-            if not initialized:
-                smu.setup_once(nplc_default=nplc)
-                initialized = True
-            else:
-                smu.set_nplc_if_needed(nplc)
+            smu.setup_once(nplc_default=nplc)  # no-op once configured (until reconfigure)
+            smu.set_nplc_if_needed(nplc)
         except Exception as e:
             set_status(f"Connect/setup error: {e}")
             run_event.clear()
@@ -282,7 +343,7 @@ def worker_loop():
             R = smu.measure_R_delta(I_amps=I, settle_s=settle_s)
             t = time.time() - t0
             append_point(t, R)
-            set_status(f"OK — {R/1e3:.3f} kΩ  | I={iex_ua:.4f} µA | NPLC={nplc:g}")
+            set_status(f"OK — {R/1e3:.3f} kΩ  | I={iex_ua:.4f} µA | NPLC={nplc:g} | {idn_text}")
         except Exception as e:
             smu.output_off()
             set_status(f"Measurement error: {e}")
@@ -340,8 +401,25 @@ def normalize(v, vmin, vmax):
     return (v - vmin) / (vmax - vmin)
 
 # ----------------------------- Argument -----------------------------
-if len(sys.argv) == 2:
-    json_file = sys.argv[1]
+def is_port_in_use(port):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        return s.connect_ex(('127.0.0.1', port)) == 0
+
+
+VIEWER_URL = f"http://127.0.0.1:{args.port}/"
+
+if __name__ == "__main__" and is_port_in_use(args.port):
+    # Checked before the file dialog so the user isn't asked for a file for nothing.
+    if tk_message(
+        "askyesno", "Viewer Already Running",
+        "A Resistance Viewer is already running.\n\n"
+        "Open it in the browser? (Use its 'Quit viewer' button before loading another database.)"
+    ):
+        webbrowser.open(VIEWER_URL)
+    sys.exit(0)
+
+if args.json_file:
+    json_file = args.json_file
 else:
     import tkinter as tk
     from tkinter import filedialog
@@ -352,31 +430,26 @@ else:
         title="Select Wafer Database JSON",
         filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")]
     )
+    root.destroy()
     if not json_file:
         print("No file selected. Exiting.")
         sys.exit(0)
-with open(json_file, "r", encoding="utf-8") as f:
-    wafer_data = json.load(f)
 
 try:
+    with open(json_file, "r", encoding="utf-8") as f:
+        wafer_data = json.load(f)
     wafer_info = wafer_data["metadata"]
     dies = wafer_data["dies"]
-except KeyError:
-    import tkinter as tk
-    from tkinter import messagebox
-    root = tk.Tk()
-    root.withdraw()
-    root.call('wm', 'attributes', '.', '-topmost', True)
-    messagebox.showerror(
-        "Invalid File Format", 
+except (KeyError, TypeError, ValueError, OSError) as e:
+    tk_message(
+        "showerror", "Invalid File Format",
         "The selected JSON file does not appear to be a valid wafer database.\n\n"
         "Make sure you select the generated database file (e.g. 'config_ZenoSi_01_database.json') "
-        "and not the generator configuration file."
+        f"and not the generator configuration file.\n\nDetails: {e}"
     )
     sys.exit(1)
 
 # Try to load TJ databases (Multiple Support)
-import pathlib
 p = pathlib.Path(json_file)
 
 sub_dbs = wafer_info.get("sub_databases", [])
@@ -589,7 +662,6 @@ def create_wafer_figure(selection=None, dies_subset=None, view_mode="sample", cu
     if source == "table" and selected_sample:
         for d in target_dies:
             if d["label"] == selected_sample:
-                import uuid
                 w = d["width_um"]
                 h = d["height_um"]
                 cx = d["x_um"] + w / 2
@@ -606,8 +678,9 @@ def create_wafer_figure(selection=None, dies_subset=None, view_mode="sample", cu
     return fig
 
 # ----------------------------- Dash app -----------------------------
-external_stylesheets = [dbc.themes.BOOTSTRAP]
-app = dash.Dash(__name__, external_stylesheets=external_stylesheets)
+# Bootstrap CSS is served from the local 'assets' folder (bundled in the exe), so the
+# viewer also looks right on lab PCs without internet access.
+app = dash.Dash(__name__, assets_folder=resource_path("assets"), title="Resistance Viewer")
 
 table_columns = [{"name": "Sample", "id": "Sample"}]
 for i in range(max_res_cols):
@@ -647,9 +720,11 @@ for t in sorted(list(all_types_set)):
     Input("iex-ua", "value"),
     Input("nplc", "value"),
     State("store-running", "data"),
+    State("visa-resource", "value"),
+    State("simulate", "value"),
     prevent_initial_call=True,
 )
-def controls(n_start, n_clear, iex_ua, nplc, running_state):
+def controls(n_start, n_clear, iex_ua, nplc, running_state, visa_resource, simulate):
     triggered = callback_context.triggered
     trig = triggered[0]["prop_id"].split(".")[0] if triggered else None
 
@@ -676,7 +751,8 @@ def controls(n_start, n_clear, iex_ua, nplc, running_state):
             set_status("Stopped.")
             return {"running": False}, "Start", START_STYLE
         else:
-            # START
+            # START (apply instrument address / simulation choice first)
+            smu.reconfigure((visa_resource or DEFAULT_RESOURCE).strip(), bool(simulate))
             run_event.set()
             set_status("Starting…")
             return {"running": True}, "Stop", STOP_STYLE
@@ -773,15 +849,15 @@ def register_value(n_clicks, active_cell, table_data, table_columns):
         if "_1" in col_id:
             target_sample = row_data.get("Sample_1")
             try: target_res_id = int(col_id.split("_")[0][1:])
-            except: pass
+            except ValueError: pass
         elif "_2" in col_id:
             target_sample = row_data.get("Sample_2")
             try: target_res_id = int(col_id.split("_")[0][1:])
-            except: pass
+            except ValueError: pass
     else:
         target_sample = row_data.get("Sample")
         try: target_res_id = int(col_id.split(" ")[0][1:])
-        except: pass
+        except ValueError: pass
         
     if not target_sample or not target_res_id:
         return no_update, no_update, no_update, "Please select a resistance cell (R#)."
@@ -868,10 +944,6 @@ app.layout = dbc.Container(fluid=True, children=[
     dcc.Store(id="selection-store", data={"sample": None, "res_id": None}),
     # Store for live measurement running state (Start/Stop)
     dcc.Store(id="store-running", data={"running": False}),
-    # Store for live data (small buffer for graph)
-    dcc.Store(id="store-data", data={"t": [], "R": []}),
-    # Helper to track if we just registered a value (to auto-advance)
-    dcc.Store(id="register-trigger-store", data={"ts": 0}),
 
     # UI Tick for Live Graph updates (500ms)
     dcc.Interval(id="live-update-tick", interval=500, n_intervals=0),
@@ -887,7 +959,13 @@ app.layout = dbc.Container(fluid=True, children=[
             width=8
         ),
         dbc.Col([
-            html.H4("Settings"),
+            html.Div([
+                html.Button("Quit viewer", id="btn-quit", n_clicks=0,
+                            title="Stop the viewer program (data is already saved)",
+                            style={**BTN_STYLE, "float": "right", "marginRight": "0"}),
+                html.H4("Settings"),
+            ]),
+            html.Div(id="quit-msg", style={"color": "#c0392b", "fontWeight": "bold"}),
             html.Label("View Mode:"),
             dcc.RadioItems(
                 id="view-mode-selector",
@@ -952,6 +1030,11 @@ app.layout = dbc.Container(fluid=True, children=[
                         min=0.1, max=10.0, step=None, value=1.0,
                         marks=NPLC_MARKS,
                     ),
+                    html.Br(),
+                    html.Label("Instrument VISA address (applied on Start)"),
+                    dbc.Input(id="visa-resource", value=smu.cfg.resource, size="sm", debounce=True),
+                    dbc.Checkbox(id="simulate", value=smu.cfg.simulate,
+                                 label="Simulate instrument (no hardware)", style={"marginTop": "6px"}),
                 ])
             ], style={"marginBottom": "15px"}),
             
@@ -964,28 +1047,41 @@ app.layout = dbc.Container(fluid=True, children=[
 
 
 # ----------------------------- Save Logic -----------------------------
-def save_wafer_data(updated_dies, metadata, main_json_path):
+_backed_up = set()  # files already backed up to .bak during this session
+save_lock = threading.Lock()
+
+
+def save_wafer_data(*a, **kw):
+    with save_lock:  # Dash may run callbacks concurrently
+        return _save_wafer_data(*a, **kw)
+
+
+def _save_wafer_data(updated_dies, metadata, main_json_path):
     """
     Saves the wafer dies to JSON files:
     1. Splits dies by type (sample vs others).
     2. Saves 'sample' type to main_json_path.
     3. Saves other types to their respective sub-database files defined in metadata.
     4. Supports legacy _TJ.json fallback.
+    Writes are atomic (temp file + replace), and the first save of a session keeps
+    the previous version of each file as '<name>.bak'.
     Returns a status string.
     """
-    import pathlib
-    import json
-    
     timestamp = compact_now()
     status_msg = ""
-    
+
+    def write(path, data):
+        path = str(path)
+        first = path not in _backed_up
+        atomic_write_json(path, data, backup=first)
+        _backed_up.add(path)
+
     # 1. Save Samples
     sample_dies = [d for d in updated_dies if d.get("type", "sample") == "sample"]
     output_json_samples = {"metadata": metadata, "dies": sample_dies}
-    
+
     try:
-        with open(main_json_path, "w", encoding="utf-8") as f:
-            json.dump(output_json_samples, f, indent=2)
+        write(main_json_path, output_json_samples)
         status_msg = f"Saved at {timestamp}."
     except Exception as e:
         status_msg = f"❌ Error writing Samples JSON: {e}"
@@ -1003,8 +1099,7 @@ def save_wafer_data(updated_dies, metadata, main_json_path):
         tj_dies = [d for d in updated_dies if d.get("type") == "test_junction"]
         if tj_dies or tj_json_file.exists():
             try:
-                with open(tj_json_file, "w", encoding="utf-8") as f:
-                        json.dump({"metadata": metadata, "dies": tj_dies}, f, indent=2)
+                write(tj_json_file, {"metadata": metadata, "dies": tj_dies})
                 status_msg += " (Updated Legacy TJ)"
             except Exception as e:
                 status_msg += f" ❌ Error writing TJ: {e}"
@@ -1019,10 +1114,8 @@ def save_wafer_data(updated_dies, metadata, main_json_path):
         
         # Reconstruct full object
         try:
-            p = pathlib.Path(main_json_path)
-            tgt_path = p.with_name(f_name)
-            with open(tgt_path, "w", encoding="utf-8") as f:
-                json.dump({"metadata": metadata, "dies": t_dies}, f, indent=2)
+            tgt_path = pathlib.Path(main_json_path).with_name(f_name)
+            write(tgt_path, {"metadata": metadata, "dies": t_dies})
             status_msg += f" (Updated {t_type})"
         except Exception as e:
             status_msg += f" ❌ Error writing {t_type}: {e}"
@@ -1057,7 +1150,8 @@ def update_from_table(ts, selection_data, view_mode, save_note_clicks, notes_val
 
     changes_made = 0
     status = "Ready."
-    
+    removed_msgs = []
+
     timestamp = compact_now()
     die_by_label = {d["label"]: d for d in dies}
 
@@ -1097,12 +1191,21 @@ def update_from_table(ts, selection_data, view_mode, save_note_clicks, notes_val
                     cur_f = as_float(cur_val)
                     prev_f = as_float(prev_val)
 
-                    if cur_f != prev_f:
-                        if cur_f is not None:
-                            r.setdefault("history", []).append(
-                                {"timestamp": timestamp, "value_ohm": cur_f}
-                            )
-                            local_changes += 1
+                    if cur_f == prev_f:
+                        continue
+                    if cur_f is not None:
+                        r.setdefault("history", []).append(
+                            {"timestamp": timestamp, "value_ohm": cur_f}
+                        )
+                        local_changes += 1
+                    elif cur_val in ("", None) and r.get("history"):
+                        # Cell cleared: undo the latest value. It is kept under "removed"
+                        # (with the removal time) so nothing is ever lost.
+                        removed = dict(r["history"].pop())
+                        removed["removed_at"] = timestamp
+                        r.setdefault("removed", []).append(removed)
+                        removed_msgs.append(f"{sample_label} R{i}: removed {removed.get('value_ohm')} Ω")
+                        local_changes += 1
                 return local_changes
 
             # Check for standard "Sample" key
@@ -1118,22 +1221,18 @@ def update_from_table(ts, selection_data, view_mode, save_note_clicks, notes_val
     # --- Handle Manual Note Save ---
     if trigger == "save-note-btn" and selection_data:
         label = selection_data.get("sample")
-        print(f"DEBUG: Save Button Clicked. Label: {label}")
         if label:
             die = die_by_label.get(label)
             if die:
-                # Force update based on current Textarea value
-                print(f"DEBUG: Updating note for {label} to: '{notes_value}'")
-                die["notes"] = notes_value
+                die["notes"] = notes_value or ""
                 changes_made += 1
-                # status update handled below
 
     # Save JSON if edits happened
     if changes_made > 0:
-        print(f"DEBUG: Saving wafer data...")
         status = save_wafer_data(dies, wafer_info, json_file)
-        print(f"DEBUG: Save Status: {status}")
         status = f"Saved {changes_made} change(s). " + status
+        if removed_msgs:
+            status += " | " + "; ".join(removed_msgs) + " (kept under 'removed' in the JSON)"
 
     previous_data = current_data
 
@@ -1141,15 +1240,13 @@ def update_from_table(ts, selection_data, view_mode, save_note_clicks, notes_val
     # Default to "sample" if type is missing (backward compatibility)
     filtered_dies = [d for d in dies if d.get("type", "sample") == view_mode]
 
-    # Check if we need split view (only for TJs and > 35 items)
-    use_split_view = (view_mode == "test_junction" and len(filtered_dies) > 35)
+    # Two-column table for any test-junction type with many entries
+    use_split_view = (view_mode != "sample" and len(filtered_dies) > 35)
 
     new_rows = []
     new_columns = []
 
     if use_split_view:
-        # Split into two columns
-        import math
         split_idx = math.ceil(len(filtered_dies) / 2)
         left_dies = filtered_dies[:split_idx]
         right_dies = filtered_dies[split_idx:]
@@ -1310,15 +1407,7 @@ def sync_selection(clickData, active_cell, table_data, table_columns, selection_
         # Determine target column associated with selection
         # If res_id set -> that specific R column
         # If no res_id -> The "Sample" column
-        
-        needed_columns = []
         if is_split_mode:
-            possible_target_cols = []
-            if res_id:
-                possible_target_cols = [f"R{res_id}_1", f"R{res_id}_2"]
-            else:
-                possible_target_cols = ["Sample_1", "Sample_2"]
-            
             # Find row
             for i, r in enumerate(table_data):
                 if r.get("Sample_1") == sample:
@@ -1365,13 +1454,13 @@ def sync_selection(clickData, active_cell, table_data, table_columns, selection_
                 if col_id.startswith("R") and "_1" in col_id:
                     try:
                         res_id = int(col_id.split("_")[0][1:])
-                    except: pass
+                    except ValueError: pass
             elif col_id == "Sample_2" or ("_2" in col_id):
                 sample = table_data[row_idx].get("Sample_2")
                 if col_id.startswith("R") and "_2" in col_id:
                      try:
                         res_id = int(col_id.split("_")[0][1:])
-                     except: pass
+                     except ValueError: pass
         else:
             # Check standard
             # Sample name or R column
@@ -1379,7 +1468,7 @@ def sync_selection(clickData, active_cell, table_data, table_columns, selection_
             if col_id.startswith("R") and "(Ω)" in col_id:
                 try:
                     res_id = int(col_id.split(" ")[0][1:])
-                except: pass
+                except ValueError: pass
 
         if sample:
             selected_rows = [row_idx]
@@ -1388,32 +1477,31 @@ def sync_selection(clickData, active_cell, table_data, table_columns, selection_
 
     return cur_selection, active, selected_rows, selected_cells
 
+# === 4) Quit: stop the background program (the exe has no console window to close)
+@app.callback(
+    Output("quit-msg", "children"),
+    Input("btn-quit", "n_clicks"),
+    prevent_initial_call=True,
+)
+def quit_viewer(n_clicks):
+    if not n_clicks:
+        return no_update
+    run_event.clear()
+    stop_event.set()
+
+    def _shutdown():
+        try:
+            smu.close()  # output off + release the instrument
+        finally:
+            os._exit(0)
+
+    threading.Timer(0.5, _shutdown).start()
+    return "Viewer stopped. All data was already saved — you can close this tab."
+
+
 if __name__ == "__main__":
-    import threading
-    import webbrowser
-    import socket
-    import sys
-    import tkinter as tk
-    from tkinter import messagebox
+    if not args.no_browser:
+        threading.Timer(1.5, lambda: webbrowser.open(VIEWER_URL)).start()
 
-    # Check if the port is already in use by a previous instance
-    def is_port_in_use(port):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            return s.connect_ex(('127.0.0.1', port)) == 0
-
-    if is_port_in_use(8050):
-        root = tk.Tk()
-        root.withdraw()
-        root.call('wm', 'attributes', '.', '-topmost', True)
-        messagebox.showerror(
-            "Viewer Already Running",
-            "Another instance of the Resistance Viewer is already running in the background!\n\n"
-            "Please fully close the previous viewer (the black console window) before trying to load a new database."
-        )
-        sys.exit(1)
-
-    # Auto-open browser after a short delay
-    threading.Timer(1.5, lambda: webbrowser.open("http://127.0.0.1:8050/")).start()
-    
     # Run without debug to prevent duplicate tkinter dialogs from the reloader
-    app.run(debug=False, port=8050)
+    app.run(debug=False, port=args.port)

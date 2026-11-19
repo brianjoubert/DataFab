@@ -23,7 +23,10 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies (from uv.lock)
-        run: uv sync --locked
+        run: uv sync --locked --group build
+
+      - name: Run tests
+        run: uv run --locked pytest -v
 
       - name: Build DatabaseGenerator.exe
         run: uv run --locked pyinstaller --noconfirm --clean DatabaseGenerator.spec
@@ -38,6 +41,28 @@ jobs:
             if (-not (Test-Path $exe)) { throw "Missing $exe" }
             "{0}  {1:N1} MB" -f $exe, ((Get-Item $exe).Length / 1MB)
           }
+
+      - name: Smoke-test ResistanceViewer.exe (simulated instrument)
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "smoke"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          uv run --locked python -c "import json,sys; sys.path.insert(0,'tests'); from test_generate import make_gds; from database_4 import generate_from_config; d=sys.argv[1]; make_gds(d+'/l.gds'); c={'script_parameters':{'input_gds_file':d+'/l.gds','input_layer':[201,0],'resistance_layer':[202,0],'test_junctions':[{'name':'tj_single','layer':[250,0]}],'text_layer':[203,0],'text_size_um':50,'relative_pos_x':0.1,'relative_pos_y':0.5,'tolerance_fraction':0.1,'label_prefix':'CI_','export_gds_with_text':False},'wafer_metadata':{'material':'Si','size_um':76200,'thickness_um':385}}; json.dump(c,open(d+'/c.json','w')); generate_from_config(d+'/c.json')" $dir
+          $p = Start-Process dist/ResistanceViewer.exe -ArgumentList "`"$dir/c_database.json`"","--simulate","--no-browser","--port","8077" -PassThru
+          $ok = $false
+          for ($i = 0; $i -lt 90; $i++) {
+            Start-Sleep 2
+            try {
+              $css = Invoke-WebRequest http://127.0.0.1:8077/assets/bootstrap.min.css -UseBasicParsing -TimeoutSec 5
+              if ($css.StatusCode -eq 200 -and $css.Content.Length -gt 100000) { $ok = $true; break }
+            } catch {}
+          }
+          if (-not $ok) { Stop-Process $p -Force -ErrorAction SilentlyContinue; throw "Viewer did not serve the page" }
+          "Viewer is up and serves bundled Bootstrap CSS."
+          $body = '{"output":"quit-msg.children","outputs":{"id":"quit-msg","property":"children"},"inputs":[{"id":"btn-quit","property":"n_clicks","value":1}],"changedPropIds":["btn-quit.n_clicks"],"state":[]}'
+          Invoke-WebRequest http://127.0.0.1:8077/_dash-update-component -Method Post -ContentType "application/json" -Body $body -UseBasicParsing | Out-Null
+          if (-not $p.WaitForExit(15000)) { Stop-Process $p -Force; throw "Quit button did not stop the viewer" }
+          "Quit button stopped the viewer."
 
       - name: Upload executables
         uses: actions/upload-artifact@v4

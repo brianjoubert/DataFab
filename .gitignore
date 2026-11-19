@@ -28,3 +28,6 @@ get_logs.py
 Thumbs.db
 .vscode/
 .idea/
+
+# Backups written by the tools
+*.bak

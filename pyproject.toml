@@ -18,20 +18,22 @@ dependencies = [
   "pyvisa",
   "pyvisa-py",
   "pyserial",
-  "pyinstaller>=6.20.0",
 ]
 
-[project.optional-dependencies]
-# Add `--extra dev` to include these when syncing
+[dependency-groups]
+# `uv sync` installs "dev" by default; add `--group build` to get PyInstaller.
 dev = [
   "ruff",
   "black",
   "pytest",
 ]
-
-[tool.uv]
-# If you want a reproducible lockfile:
-# lockfile = "uv.lock"
+build = [
+  "pyinstaller>=6.20.0",
+]
 
 [tool.ruff]
 line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

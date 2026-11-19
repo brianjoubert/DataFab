@@ -375,14 +375,16 @@ dependencies = [
     { name = "numpy" },
     { name = "pandas" },
     { name = "plotly" },
-    { name = "pyinstaller" },
     { name = "pyserial" },
     { name = "pyvisa" },
     { name = "pyvisa-py" },
     { name = "shapely" },
 ]
 
-[package.optional-dependencies]
+[package.dev-dependencies]
+build = [
+    { name = "pyinstaller" },
+]
 dev = [
     { name = "black" },
     { name = "pytest" },
@@ -391,7 +393,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "black", marker = "extra == 'dev'" },
     { name = "dash" },
     { name = "dash-bootstrap-components" },
     { name = "gdsfactory" },
@@ -399,15 +400,19 @@ requires-dist = [
     { name = "numpy" },
     { name = "pandas" },
     { name = "plotly" },
-    { name = "pyinstaller", specifier = ">=6.20.0" },
     { name = "pyserial" },
-    { name = "pytest", marker = "extra == 'dev'" },
     { name = "pyvisa" },
     { name = "pyvisa-py" },
-    { name = "ruff", marker = "extra == 'dev'" },
     { name = "shapely" },
 ]
-provides-extras = ["dev"]
+
+[package.metadata.requires-dev]
+build = [{ name = "pyinstaller", specifier = ">=6.20.0" }]
+dev = [
+    { name = "black" },
+    { name = "pytest" },
+    { name = "ruff" },
+]
 
 [[package]]
 name = "debugpy"
