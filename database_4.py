@@ -383,7 +383,8 @@ def generate_from_config(config_json_path: str, config: Optional[Dict] = None):
     Run the generation. `config` lets a caller (the GUI) pass edited settings without
     writing them to disk; outputs are still placed next to `config_json_path`.
     """
-    config = copy.deepcopy(config) if config is not None else load_json_lenient(config_json_path)
+    _safe_console()
+    config =copy.deepcopy(config) if config is not None else load_json_lenient(config_json_path)
     params = config["script_parameters"]
     wafer_metadata = config["wafer_metadata"]
     original_gds = params["input_gds_file"]
@@ -450,13 +451,17 @@ def generate_from_config(config_json_path: str, config: Optional[Dict] = None):
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-def main():
-    # Windows consoles default to cp1252, which cannot print the ✅/⚠️ status symbols.
+def _safe_console():
+    """Windows consoles/pipes often use cp1252, which cannot print the ✅/⚠️ status symbols:
+    replace unprintable characters instead of crashing."""
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(errors="replace")
         except Exception:
-            pass
+            pass  # e.g. the GUI's own writer: nothing to do
+
+
+def main():
     if len(sys.argv) != 2:
         print("Usage: python database_4.py path\\to\\config.json")
         sys.exit(1)
