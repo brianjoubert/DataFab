@@ -1,0 +1,54 @@
+name: Build Windows executables
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to attach .exe files to a GitHub Release on tags
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install dependencies (from uv.lock)
+        run: uv sync --locked
+
+      - name: Build DatabaseGenerator.exe
+        run: uv run --locked pyinstaller --noconfirm --clean DatabaseGenerator.spec
+
+      - name: Build ResistanceViewer.exe
+        run: uv run --locked pyinstaller --noconfirm --clean ResistanceViewer.spec
+
+      - name: Check outputs
+        shell: pwsh
+        run: |
+          foreach ($exe in "dist/DatabaseGenerator.exe", "dist/ResistanceViewer.exe") {
+            if (-not (Test-Path $exe)) { throw "Missing $exe" }
+            "{0}  {1:N1} MB" -f $exe, ((Get-Item $exe).Length / 1MB)
+          }
+
+      - name: Upload executables
+        uses: actions/upload-artifact@v4
+        with:
+          name: DataFab-windows
+          path: dist/*.exe
+          retention-days: 30
+
+      - name: Publish GitHub Release (tags v* only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.exe
+          generate_release_notes: true

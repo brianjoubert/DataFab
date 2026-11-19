@@ -1,0 +1,27 @@
+{
+  "script_parameters": {
+    "input_gds_file": "C:/path/to/your_layout.gds",
+    "input_layer": [201, 0],
+    "resistance_layer": [202, 0],
+    "test_junctions": [
+      { "name": "tj_single", "layer": [250, 0] },
+      { "name": "tj_triple", "layer": [251, 0] },
+      { "name": "tj_snail",  "layer": [252, 0] }
+    ],
+    "text_layer": [203, 0],
+    "text_size_um": 500.0,
+    "relative_pos_x": 0.1,
+    "relative_pos_y": 0.5,
+    "tolerance_fraction": 0.1,
+    "label_prefix": "WAFER01_",
+    "mirror": true,
+    "mirror_offset_fraction": 0.15,
+    "export_gds_with_text": true
+  },
+  "wafer_metadata": {
+    "material": "Silicon",
+    "size_um": 76200,
+    "thickness_um": 385,
+    "recipe": "LOR 20B / S1805"
+  }
+}

@@ -1,0 +1,30 @@
+# --- Python / tooling ---
+.venv/
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.pytest_cache/
+
+# --- PyInstaller output (built by GitHub Actions) ---
+build/
+dist/
+*.exe
+
+# --- Fabrication data: keep out of git ---
+*.gds
+*.oas
+config*.json
+*_database*.json
+!examples/*.json
+
+# --- Unrelated local scripts containing credentials (reMarkable tablet) ---
+fix_multiple.py
+fix_out_of_sync.py
+fix_rm.py
+get_logs.py
+
+# --- OS / editors ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

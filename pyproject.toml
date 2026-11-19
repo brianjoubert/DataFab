@@ -1,0 +1,37 @@
+[project]
+name = "datafaf"
+version = "0.1.0"
+description = "Wafer/die database generator (GDS -> JSON) and resistance viewer with Keithley 2450 live measurement"
+readme = "README.md"
+requires-python = ">=3.12"
+
+# Direct runtime deps inferred from your scripts
+dependencies = [
+  "numpy",
+  "pandas",
+  "plotly",
+  "dash",
+  "dash-bootstrap-components",
+  "shapely",
+  "gdsfactory",
+  "klayout",                      # provides the `klayout.db` module (imported as `pya`)
+  "pyvisa",
+  "pyvisa-py",
+  "pyserial",
+  "pyinstaller>=6.20.0",
+]
+
+[project.optional-dependencies]
+# Add `--extra dev` to include these when syncing
+dev = [
+  "ruff",
+  "black",
+  "pytest",
+]
+
+[tool.uv]
+# If you want a reproducible lockfile:
+# lockfile = "uv.lock"
+
+[tool.ruff]
+line-length = 100
