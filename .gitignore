@@ -31,3 +31,5 @@ Thumbs.db
 
 # Backups written by the tools
 *.bak
+*.deb
+demo/

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=DataFab
+GenericName=Wafer database & measurement
+Comment=Generate wafer databases from GDS layouts and measure resistances with a Keithley 2450
+Exec=datafab %f
+Icon=datafab
+Terminal=false
+Categories=Science;Engineering;
+MimeType=application/json;
+StartupWMClass=datafab

@@ -1,0 +1,2 @@
+# Give the logged-in user access to Keithley instruments over USB (pyvisa-py / USB-TMC).
+SUBSYSTEM=="usb", ATTRS{idVendor}=="05e6", MODE="0660", GROUP="plugdev", TAG+="uaccess"

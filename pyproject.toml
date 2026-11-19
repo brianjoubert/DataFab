@@ -1,22 +1,20 @@
 [project]
 name = "datafaf"
-version = "0.1.0"
-description = "Wafer/die database generator (GDS -> JSON) and resistance viewer with Keithley 2450 live measurement"
+version = "2.0.0"
+description = "DataFab: wafer database generator (GDS -> JSON) and wafer map with Keithley 2450 live measurement (Qt)"
 readme = "README.md"
 requires-python = ">=3.12"
 
 # Direct runtime deps inferred from your scripts
 dependencies = [
   "numpy",
-  "pandas",
-  "plotly",
-  "dash",
-  "dash-bootstrap-components",
-  "shapely",
   "gdsfactory",
-  "klayout",                      # provides the `klayout.db` module (imported as `pya`)
+  "klayout",                      # provides the `klayout.db` module
+  "pyside6-essentials",           # Qt GUI
+  "pyqtgraph",                    # fast wafer map + live plot
   "pyvisa",
-  "pyvisa-py",
+  "pyvisa-py",                    # pure-Python VISA backend (Linux, no NI-VISA needed)
+  "pyusb",                        # USB-TMC for pyvisa-py
   "pyserial",
 ]
 
