@@ -521,7 +521,8 @@ df = pd.DataFrame(rows)
 # ----------------------------- Plot builder -----------------------------
 colorscale = "Viridis"
 
-def create_wafer_figure(selection=None, dies_subset=None, view_mode="sample", current_figure=None):
+def create_wafer_figure(selection=None, dies_subset=None, view_mode="sample", current_figure=None,
+                        lock_aspect=True):
     """
     selection: dict like {"sample": <label or None>, "res_id": <int or None>}
     Only the selected resistance rectangle gets a slightly larger red outline.
@@ -652,8 +653,11 @@ def create_wafer_figure(selection=None, dies_subset=None, view_mode="sample", cu
 
     layout_kwargs = dict(
         title=f"{wafer_diameter_inch:.1f}-Inch {wafer_material} Wafer ({wafer_thickness} µm thick)",
-        xaxis=dict(title="X (µm)", scaleanchor="y"),
+        # lock_aspect: true 1:1 geometry (a zoom box is enlarged to keep the ratio);
+        # unlocked: the zoom box fills the plot exactly (shapes may look stretched).
+        xaxis=dict(title="X (µm)", scaleanchor="y" if lock_aspect else None, scaleratio=1),
         yaxis=dict(title="Y (µm)"),
+        dragmode="zoom",
         margin=dict(l=40, r=40, t=60, b=40),
         showlegend=False,
         uirevision=current_uirevision
@@ -666,10 +670,14 @@ def create_wafer_figure(selection=None, dies_subset=None, view_mode="sample", cu
                 h = d["height_um"]
                 cx = d["x_um"] + w / 2
                 cy = d["y_um"] + h / 2
-                span = max(w, h) / 0.3
-                layout_kwargs["xaxis"]["range"] = [cx - span / 2, cx + span / 2]
+                # Fit the die itself with a 30% margin on each axis. With the 1:1 lock,
+                # Plotly widens the shorter axis around the die centre, so the die fills
+                # the plot instead of being a sliver in a huge square.
+                span_x = max(w * 1.6, 1.0)
+                span_y = max(h * 1.6, 1.0)
+                layout_kwargs["xaxis"]["range"] = [cx - span_x / 2, cx + span_x / 2]
                 layout_kwargs["xaxis"]["autorange"] = False
-                layout_kwargs["yaxis"]["range"] = [cy - span / 2, cy + span / 2]
+                layout_kwargs["yaxis"]["range"] = [cy - span_y / 2, cy + span_y / 2]
                 layout_kwargs["yaxis"]["autorange"] = False
                 layout_kwargs["uirevision"] = str(uuid.uuid4())
                 break
@@ -954,7 +962,12 @@ app.layout = dbc.Container(fluid=True, children=[
             dcc.Graph(
                 id="wafer-plot",
                 figure=create_wafer_figure(),
-                style={"height": "50vh"}
+                style={"height": "50vh"},
+                config={
+                    "scrollZoom": True,        # mouse wheel zooms around the cursor
+                    "doubleClick": "reset",    # double-click: back to the full wafer
+                    "displaylogo": False,
+                },
             ),
             width=8
         ),
@@ -972,8 +985,15 @@ app.layout = dbc.Container(fluid=True, children=[
                 options=view_mode_options,
                 value="sample",
                 inline=True,
-                style={"marginBottom": "1rem"}
+                style={"marginBottom": "0.5rem"}
             ),
+            dbc.Checkbox(
+                id="lock-aspect", value=True,
+                label="Keep true proportions (1:1) — untick to zoom exactly to the box you draw",
+                style={"marginBottom": "0.5rem"},
+            ),
+            html.Div("Mouse wheel: zoom at cursor · drag: zoom box · double-click: full wafer",
+                     style={"fontSize": "12px", "color": "gray", "marginBottom": "1rem"}),
             html.Hr(),
             html.H4("Sample Notes"),
             dcc.Textarea(
@@ -1135,13 +1155,14 @@ def _save_wafer_data(updated_dies, metadata, main_json_path):
     Input("selection-store", "data"),
     Input("view-mode-selector", "value"),
     Input("save-note-btn", "n_clicks"),
+    Input("lock-aspect", "value"),
     State("sample-notes-input", "value"),
     State("resistance-table", "data"),
     State("table-store", "data"),
     State("wafer-plot", "figure"),
     prevent_initial_call=False
 )
-def update_from_table(ts, selection_data, view_mode, save_note_clicks, notes_value, current_data, previous_data, current_figure):
+def update_from_table(ts, selection_data, view_mode, save_note_clicks, lock_aspect, notes_value, current_data, previous_data, current_figure):
     ctx = dash.callback_context
     trigger = ctx.triggered[0]["prop_id"].split('.')[0] if ctx.triggered else None
 
@@ -1321,7 +1342,8 @@ def update_from_table(ts, selection_data, view_mode, save_note_clicks, notes_val
                 "type": "numeric"
             })
 
-    fig = create_wafer_figure(selection_data, filtered_dies, view_mode, current_figure)
+    fig = create_wafer_figure(selection_data, filtered_dies, view_mode, current_figure,
+                              lock_aspect=bool(lock_aspect) if lock_aspect is not None else True)
     # Return new_rows to BOTH table-store (for diffing next time) AND resistance-table (for display)
     return fig, new_rows, status, new_columns, new_rows
 
