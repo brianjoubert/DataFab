@@ -522,7 +522,7 @@ df = pd.DataFrame(rows)
 colorscale = "Viridis"
 
 def create_wafer_figure(selection=None, dies_subset=None, view_mode="sample", current_figure=None,
-                        lock_aspect=True):
+                        lock_aspect=False):
     """
     selection: dict like {"sample": <label or None>, "res_id": <int or None>}
     Only the selected resistance rectangle gets a slightly larger red outline.
@@ -988,8 +988,10 @@ app.layout = dbc.Container(fluid=True, children=[
                 style={"marginBottom": "0.5rem"}
             ),
             dbc.Checkbox(
-                id="lock-aspect", value=True,
-                label="Keep true proportions (1:1) — untick to zoom exactly to the box you draw",
+                # Off by default: with a 1:1 lock Plotly forces the zoom box to the plot's
+                # aspect ratio, so the box no longer ends where you release the mouse.
+                id="lock-aspect", value=False,
+                label="Lock true 1:1 proportions (zoom box then keeps the plot's aspect ratio)",
                 style={"marginBottom": "0.5rem"},
             ),
             html.Div("Mouse wheel: zoom at cursor · drag: zoom box · double-click: full wafer",
@@ -1343,7 +1345,7 @@ def update_from_table(ts, selection_data, view_mode, save_note_clicks, lock_aspe
             })
 
     fig = create_wafer_figure(selection_data, filtered_dies, view_mode, current_figure,
-                              lock_aspect=bool(lock_aspect) if lock_aspect is not None else True)
+                              lock_aspect=bool(lock_aspect))
     # Return new_rows to BOTH table-store (for diffing next time) AND resistance-table (for display)
     return fig, new_rows, status, new_columns, new_rows
 
