@@ -103,3 +103,24 @@ def test_open_path_dispatch(app, window, setup):  # noqa: F811
     window.open_path(str(cfg_path))
     assert window.stack.currentIndex() == 0
     assert window.generator.config_path == str(cfg_path)
+
+
+def test_hover_tooltips_show_full_sample_info(app, window, setup):  # noqa: F811
+    tmp, cfg_path, _ = setup
+    from database_4 import generate_from_config
+    generate_from_config(str(cfg_path))
+    page = window.wafer
+    assert page.load_database(str(tmp / "config_database.json"))
+    plot = page.plot
+    pad_tip = plot.region_items[("W1_A1", 2)].toolTip()
+    die_tip = plot.die_items["W1_A1"].toolTip()
+    for tip in (pad_tip, die_tip):
+        assert "W1_A1" in tip and "Grid: row 1, column 1" in tip and "Size:" in tip
+        assert "R1" in tip and "R2" in tip and "Wafer: Silicon" in tip
+    assert "▶ R2" in pad_tip and "▶" not in die_tip
+    # tooltips follow edits
+    page.db.add_value("W1_A1", 2, 1234.0)
+    page.db.set_notes("W1_A1", "chipped corner")
+    plot.refresh_colors()
+    tip = plot.region_items[("W1_A1", 2)].toolTip()
+    assert "1.234 kΩ" in tip and "chipped corner" in tip

@@ -16,16 +16,54 @@ DIE_PEN = QColor("#334155")
 SELECT_PEN = QColor("#ef4444")
 
 
-def die_tooltip(d: Dict) -> str:
-    lines = [f"<b>{d['label']}</b>",
-             f"Type: {d.get('type', 'sample')}",
-             f"Position: ({d['x_um']:.0f}, {d['y_um']:.0f}) µm",
-             f"Size: {d['width_um']:.0f} × {d['height_um']:.0f} µm"]
+def _esc(text) -> str:
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+_RULE = "<span style='color:#4b5563'>──────────────</span>"
+
+
+def die_tooltip(d: Dict, wafer: Optional[Dict] = None, highlight_res: Optional[int] = None) -> str:
+    """
+    Full sample information (like the original viewer's hover): identity, grid position,
+    geometry, every resistance with its history, notes and wafer details.
+    `highlight_res` marks the pad under the mouse.
+    """
+    row, col = d.get("MAP_ROW"), d.get("MAP_COL")
+    lines = [f"<b style='font-size:11pt'>{_esc(d['label'])}</b>",
+             f"Type: {_esc(d.get('type', 'sample'))}"]
+    if row is not None and col is not None:
+        lines.append(f"Grid: row {row}, column {col}")
+    lines += [f"Position: x = {d['x_um']:.1f} µm, y = {d['y_um']:.1f} µm",
+              f"Size: {d['width_um']:.1f} × {d['height_um']:.1f} µm",
+              f"Measurement regions: {d.get('num_measure_regions', len(d.get('resistances', [])))}"]
+
+    lines.append(_RULE)
     for r in d.get("resistances", []):
-        vals = [format_ohm(h["value_ohm"]) for h in r.get("history", [])]
-        lines.append(f"R{r['id']}: " + (", ".join(vals[-5:]) if vals else "—"))
+        hist = r.get("history", [])
+        if hist:
+            vals = ", ".join(format_ohm(h["value_ohm"]) for h in hist[-8:])
+            more = f" (+{len(hist) - 8} earlier)" if len(hist) > 8 else ""
+            text = f"R{r['id']} history: {vals}{more} · last {hist[-1]['timestamp']}"
+        else:
+            text = f"R{r['id']}: N/A"
+        if r.get("removed"):
+            text += f" · {len(r['removed'])} removed"
+        lines.append(f"<b style='color:#93c5fd'>▶ {text}</b>" if r.get("id") == highlight_res else text)
+
     if d.get("notes"):
-        lines.append(f"<i>{d['notes'][:200]}</i>")
+        lines.append(_RULE)
+        lines.append(f"<i>Notes: {_esc(d['notes'][:400])}</i>")
+
+    if wafer:
+        lines.append(_RULE)
+        size = wafer.get("size_um")
+        size_txt = f"{size} µm ({float(size) / 25400:.1f}\")" if size else "?"
+        lines.append(f"Wafer: {_esc(wafer.get('material', ''))} · {size_txt} · "
+                     f"{_esc(wafer.get('thickness_um', '?'))} µm thick")
+        extra = [f"{k.replace('_', ' ').capitalize()}: {_esc(wafer[k])}"
+                 for k in ("recipe", "wafer_id") if wafer.get(k) not in (None, "", "unknown")]
+        lines += extra
     return "<br>".join(lines)
 
 
@@ -105,9 +143,9 @@ class WaferPlot(pg.PlotWidget):
         for (label, rid), item in self.region_items.items():
             r = self.db.resistance(label, rid)
             item.setBrush(QBrush(self._color(latest_value(r) if r else None)))
-            item.setToolTip(f"<b>{label} · R{rid}</b><br>{format_ohm(latest_value(r) if r else None)}")
+            item.setToolTip(die_tooltip(self.db.by_label[label], self.db.metadata, rid))
         for label, item in self.die_items.items():
-            item.setToolTip(die_tooltip(self.db.by_label[label]))
+            item.setToolTip(die_tooltip(self.db.by_label[label], self.db.metadata))
 
     def select(self, label: Optional[str], res_id: Optional[int], ensure_visible: bool = False):
         if self.highlight is not None:
@@ -192,7 +230,7 @@ class WaferPlot(pg.PlotWidget):
             die_item = ClickableRect(rect, (label, None), self._clicked)
             die_item.setPen(die_pen)
             die_item.setBrush(QBrush(QColor(255, 255, 255, 120)))
-            die_item.setToolTip(die_tooltip(d))
+            die_item.setToolTip(die_tooltip(d, db.metadata))
             die_item.setZValue(1)
             self.vb.addItem(die_item)
             self.die_items[label] = die_item
@@ -202,7 +240,7 @@ class WaferPlot(pg.PlotWidget):
                 item = ClickableRect(rr, (label, r["id"]), self._clicked)
                 item.setPen(reg_pen)
                 item.setBrush(QBrush(self._color(latest_value(r))))
-                item.setToolTip(f"<b>{label} · R{r['id']}</b><br>{format_ohm(latest_value(r))}")
+                item.setToolTip(die_tooltip(d, db.metadata, r["id"]))
                 item.setZValue(5)
                 self.vb.addItem(item)
                 self.region_items[(label, r["id"])] = item
