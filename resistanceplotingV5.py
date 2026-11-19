@@ -570,6 +570,14 @@ def create_wafer_figure(selection=None, dies_subset=None, view_mode="sample", cu
         hoverinfo="skip"
     ))
 
+    # Invisible square bounding box (the wafer flat makes the outline shorter in y):
+    # gives identical x and y autoranges, so the wafer stays round on the square plot.
+    pad = wafer_radius * 1.03
+    fig.add_trace(go.Scatter(
+        x=[-pad, pad], y=[-pad, pad], mode="markers",
+        marker=dict(size=1, opacity=0), hoverinfo="skip", showlegend=False,
+    ))
+
     for d in target_dies:
         x0 = d["x_um"]; y0 = d["y_um"]
         w  = d["width_um"]; h = d["height_um"]
@@ -655,10 +663,14 @@ def create_wafer_figure(selection=None, dies_subset=None, view_mode="sample", cu
         title=f"{wafer_diameter_inch:.1f}-Inch {wafer_material} Wafer ({wafer_thickness} µm thick)",
         # lock_aspect: true 1:1 geometry (a zoom box is enlarged to keep the ratio);
         # unlocked: the zoom box fills the plot exactly (shapes may look stretched).
-        xaxis=dict(title="X (µm)", scaleanchor="y" if lock_aspect else None, scaleratio=1),
-        yaxis=dict(title="Y (µm)"),
+        # The plot area is kept square (equal margins + square graph, see layout) and the
+        # invisible corner trace makes both autoranges the same, so the wafer is round
+        # without the lock and box zoom still follows the mouse.
+        xaxis=dict(title="X (µm)", scaleanchor="y" if lock_aspect else None, scaleratio=1,
+                   automargin=False),
+        yaxis=dict(title="Y (µm)", automargin=False),
         dragmode="zoom",
-        margin=dict(l=40, r=40, t=60, b=40),
+        margin=dict(l=80, r=20, t=50, b=50),  # 100 px horizontal = 100 px vertical
         showlegend=False,
         uirevision=current_uirevision
     )
@@ -670,14 +682,12 @@ def create_wafer_figure(selection=None, dies_subset=None, view_mode="sample", cu
                 h = d["height_um"]
                 cx = d["x_um"] + w / 2
                 cy = d["y_um"] + h / 2
-                # Fit the die itself with a 30% margin on each axis. With the 1:1 lock,
-                # Plotly widens the shorter axis around the die centre, so the die fills
-                # the plot instead of being a sliver in a huge square.
-                span_x = max(w * 1.6, 1.0)
-                span_y = max(h * 1.6, 1.0)
-                layout_kwargs["xaxis"]["range"] = [cx - span_x / 2, cx + span_x / 2]
+                # Square view (true proportions on the square plot) around the die,
+                # with a 15% margin on each side of its longest dimension.
+                span = max(w, h, 1.0) * 1.3
+                layout_kwargs["xaxis"]["range"] = [cx - span / 2, cx + span / 2]
                 layout_kwargs["xaxis"]["autorange"] = False
-                layout_kwargs["yaxis"]["range"] = [cy - span_y / 2, cy + span_y / 2]
+                layout_kwargs["yaxis"]["range"] = [cy - span / 2, cy + span / 2]
                 layout_kwargs["yaxis"]["autorange"] = False
                 layout_kwargs["uirevision"] = str(uuid.uuid4())
                 break
@@ -962,10 +972,12 @@ app.layout = dbc.Container(fluid=True, children=[
             dcc.Graph(
                 id="wafer-plot",
                 figure=create_wafer_figure(),
-                style={"height": "50vh"},
+                # Square graph: as wide as the column allows, at most 75% of the window
+                # height. Together with equal margins this gives a square plot area.
+                style={"width": "min(100%, 75vh)", "aspectRatio": "1 / 1", "margin": "0 auto"},
                 config={
                     "scrollZoom": True,        # mouse wheel zooms around the cursor
-                    "doubleClick": "reset",    # double-click: back to the full wafer
+                    "doubleClick": "reset+autosize",  # double-click: back to the full wafer
                     "displaylogo": False,
                 },
             ),
